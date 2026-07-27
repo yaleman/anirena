@@ -7,6 +7,7 @@ use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -18,10 +19,11 @@ pub struct AnirenaClient {
     pub api_key: String,
     token_cache: Option<TokenCache>,
     cache_path: PathBuf,
+    client: Client,
 }
 
 impl AnirenaClient {
-    pub fn new(api_key: String) -> Self {
+    pub fn new(api_key: String) -> Result<Self, Box<dyn std::error::Error>> {
         let cache_path = home::home_dir()
             .map(|home| home.join(".cache/anirena.json"))
             .expect("Failed to determine home directory");
@@ -34,11 +36,15 @@ impl AnirenaClient {
             }
         };
 
-        Self {
+        Ok(Self {
             api_key,
             token_cache,
             cache_path,
-        }
+            client: Client::builder()
+                .user_agent(format!("anirena-rs/{}", env!("CARGO_PKG_VERSION")))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?,
+        })
     }
 
     pub async fn get_token(&mut self) -> Result<String, Box<dyn std::error::Error>> {
@@ -48,7 +54,8 @@ impl AnirenaClient {
             return Ok(cache.bearer_token.clone());
         }
 
-        let response = reqwest::Client::new()
+        let response = self
+            .client
             .post(format!("{}/api/v1/auth/token", API_BASE_URL))
             .header("Authorization", format!("ApiKey {}", self.api_key))
             .send()
@@ -88,36 +95,45 @@ impl AnirenaClient {
         page: Option<u32>,
         pages: Option<u32>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let search_results = do_search(&self.get_token().await?, terms.clone(), page).await?;
-        if search_results.torrents.is_empty() {
-            println!("No results found for the search terms.");
-        } else {
-            let hyperlinks_enabled = io::stdout().is_terminal();
-            for torrent in search_results.torrents {
-                let group_tag = torrent
-                    .group_name
-                    .as_deref()
-                    .map(|g| format!("[{g}] "))
-                    .unwrap_or("".to_string());
-                println!(
-                    "{} {}, Size: {}, Seeders: {}, Leechers: {}",
-                    group_tag, torrent.title, torrent.size_fmt, torrent.seeders, torrent.leechers
-                );
-                println!(
-                    "{}",
-                    format_magnet_line(&torrent.magnet, hyperlinks_enabled)
-                );
-            }
-        }
-        if search_results.total_pages > 1 {
-            if let Some(pages) = pages
-                && search_results.page < pages
-            {
+        let token = self.get_token().await?;
+        let hyperlinks_enabled = io::stdout().is_terminal();
+        let mut requested_page = page;
+
+        loop {
+            let search_results = do_search(&self.client, &token, &terms, requested_page).await?;
+            let current_page = search_results.page;
+            let total_pages = search_results.total_pages;
+
+            if search_results.torrents.is_empty() {
+                println!("No results found for the search terms.");
             } else {
-                println!(
-                    "Note: There are more results available. Total pages: {}",
-                    search_results.total_pages
-                );
+                for torrent in search_results.torrents {
+                    let group_tag = torrent
+                        .group_name
+                        .as_deref()
+                        .map(|g| format!("[{g}] "))
+                        .unwrap_or("".to_string());
+                    println!(
+                        "{} {}, Size: {}, Seeders: {}, Leechers: {}",
+                        group_tag,
+                        torrent.title,
+                        torrent.size_fmt,
+                        torrent.seeders,
+                        torrent.leechers
+                    );
+                    println!(
+                        "{}",
+                        format_magnet_line(&torrent.magnet, hyperlinks_enabled)
+                    );
+                }
+            }
+
+            requested_page = next_search_page(current_page, total_pages, pages);
+            if requested_page.is_none() {
+                if current_page < total_pages {
+                    println!("Note: There are more results available. Total pages: {total_pages}");
+                }
+                break;
             }
         }
 
@@ -125,9 +141,23 @@ impl AnirenaClient {
     }
 }
 
+fn next_search_page(
+    current_page: u32,
+    total_pages: u32,
+    requested_last_page: Option<u32>,
+) -> Option<u32> {
+    match requested_last_page {
+        Some(last_page) if current_page < last_page && current_page < total_pages => {
+            current_page.checked_add(1)
+        }
+        Some(_) | None => None,
+    }
+}
+
 async fn do_search(
+    http_client: &reqwest::Client,
     token: &str,
-    terms: Vec<String>,
+    terms: &[String],
     page: Option<u32>,
 ) -> Result<SearchResults, Box<dyn std::error::Error>> {
     let mut search_payload = HashMap::from([("q", json!(terms.join(" ")))]);
@@ -135,7 +165,7 @@ async fn do_search(
         search_payload.insert("page", json!(page));
     }
 
-    let response = reqwest::Client::new()
+    let response = http_client
         .post(format!("{}/api/v1/torrents/search", API_BASE_URL))
         .header("Authorization", format!("Bearer {}", token))
         .json(&search_payload)
@@ -391,5 +421,23 @@ mod tests {
         );
         assert!(!formatted.contains('\x1b'));
         assert!(!formatted.contains('\n'));
+    }
+
+    #[test]
+    fn search_continues_until_the_requested_page() {
+        assert_eq!(next_search_page(1, 5, Some(3)), Some(2));
+        assert_eq!(next_search_page(2, 5, Some(3)), Some(3));
+        assert_eq!(next_search_page(3, 5, Some(3)), None);
+    }
+
+    #[test]
+    fn search_stops_at_the_last_available_page() {
+        assert_eq!(next_search_page(2, 3, Some(5)), Some(3));
+        assert_eq!(next_search_page(3, 3, Some(5)), None);
+    }
+
+    #[test]
+    fn search_does_not_continue_without_a_page_limit() {
+        assert_eq!(next_search_page(1, 5, None), None);
     }
 }
