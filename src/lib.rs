@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
-use std::io::{self, IsTerminal};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub mod cli;
+pub mod qbt;
 
 pub const API_BASE_URL: &str = "https://www.anirena.com";
 
@@ -23,7 +24,7 @@ pub struct AnirenaClient {
 }
 
 impl AnirenaClient {
-    pub fn new(api_key: String) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(api_key: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let cache_path = home::home_dir()
             .map(|home| home.join(".cache/anirena.json"))
             .expect("Failed to determine home directory");
@@ -37,7 +38,7 @@ impl AnirenaClient {
         };
 
         Ok(Self {
-            api_key,
+            api_key: api_key.to_string(),
             token_cache,
             cache_path,
             client: Client::builder()
@@ -91,41 +92,23 @@ impl AnirenaClient {
 
     pub async fn search(
         &mut self,
-        terms: Vec<String>,
+        terms: &[String],
         page: Option<u32>,
         pages: Option<u32>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Torrent>, Box<dyn std::error::Error>> {
         let token = self.get_token().await?;
-        let hyperlinks_enabled = io::stdout().is_terminal();
-        let mut requested_page = page;
 
+        let mut requested_page = page;
+        let mut results = Vec::new();
         loop {
-            let search_results = do_search(&self.client, &token, &terms, requested_page).await?;
+            let search_results = do_search(&self.client, &token, terms, requested_page).await?;
             let current_page = search_results.page;
             let total_pages = search_results.total_pages;
 
             if search_results.torrents.is_empty() {
                 println!("No results found for the search terms.");
             } else {
-                for torrent in search_results.torrents {
-                    let group_tag = torrent
-                        .group_name
-                        .as_deref()
-                        .map(|g| format!("[{g}] "))
-                        .unwrap_or("".to_string());
-                    println!(
-                        "{} {}, Size: {}, Seeders: {}, Leechers: {}",
-                        group_tag,
-                        torrent.title,
-                        torrent.size_fmt,
-                        torrent.seeders,
-                        torrent.leechers
-                    );
-                    println!(
-                        "{}",
-                        format_magnet_line(&torrent.magnet, hyperlinks_enabled)
-                    );
-                }
+                results.extend(search_results.torrents.clone());
             }
 
             requested_page = next_search_page(current_page, total_pages, pages);
@@ -137,7 +120,7 @@ impl AnirenaClient {
             }
         }
 
-        Ok(())
+        Ok(results)
     }
 }
 
@@ -189,7 +172,7 @@ async fn do_search(
         .map_err(|err| Box::new(err) as Box<dyn std::error::Error>)
 }
 
-fn format_magnet_line(magnet: &str, hyperlinks_enabled: bool) -> String {
+pub fn format_magnet_line(magnet: &str, hyperlinks_enabled: bool) -> String {
     let contains_control_characters = magnet.chars().any(char::is_control);
     let sanitized_magnet = magnet
         .chars()
@@ -307,24 +290,23 @@ pub struct SearchResults {
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct Torrent {
-    id: uuid::Uuid,
-    title: String,
-    info_hash_v1: Option<String>,
-    info_hash_v2: Option<String>,
-    size_fmt: String,
-
-    completed: u64,
-    seeders: u32,
-    leechers: u32,
-    languages: Vec<String>,
-    comment_count: u32,
-    created_at: String,
-    created_at_unix: u64,
-    cat_slug: String,
-    sub_slug: String,
-    group_name: Option<String>,
-    uploader: String,
-    magnet: String,
+    pub id: uuid::Uuid,
+    pub title: String,
+    pub info_hash_v1: Option<String>,
+    pub info_hash_v2: Option<String>,
+    pub size_fmt: String,
+    pub completed: u64,
+    pub seeders: u32,
+    pub leechers: u32,
+    pub languages: Vec<String>,
+    pub comment_count: u32,
+    pub created_at: String,
+    pub created_at_unix: u64,
+    pub cat_slug: String,
+    pub sub_slug: String,
+    pub group_name: Option<String>,
+    pub uploader: String,
+    pub magnet: String,
 }
 
 impl Torrent {
