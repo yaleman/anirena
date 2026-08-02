@@ -302,10 +302,10 @@ pub struct Torrent {
     pub comment_count: u32,
     pub created_at: String,
     pub created_at_unix: u64,
-    pub cat_slug: String,
-    pub sub_slug: String,
+    pub cat_slug: Option<String>,
+    pub sub_slug: Option<String>,
     pub group_name: Option<String>,
-    pub uploader: String,
+    pub uploader: Option<String>,
     pub magnet: String,
 }
 

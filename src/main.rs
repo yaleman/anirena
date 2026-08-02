@@ -13,6 +13,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut client = anirena::AnirenaClient::new(&opts.api_key)?;
 
+    if opts.search_term.is_empty() {
+        eprintln!("Error: No search term provided.");
+        std::process::exit(1);
+    }
+
     println!("Searching for: {}", opts.search_term.join(" "));
     let results = client.search(&opts.search_term, None, opts.pages).await?;
     if !opts.add {
@@ -35,7 +40,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let to_add = dialoguer::MultiSelect::new()
             .with_prompt("Select torrents to add")
-            .items(results.iter().map(|t| &t.title).collect::<Vec<_>>())
+            .items(
+                results
+                    .iter()
+                    .map(|t| format!("{} - {}", t.title, t.size_fmt))
+                    .collect::<Vec<_>>(),
+            )
             .interact()
             .unwrap_or_default();
         if to_add.is_empty() {
