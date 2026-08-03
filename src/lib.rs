@@ -119,7 +119,7 @@ impl AnirenaClient {
                 break;
             }
         }
-
+        results.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
         Ok(results)
     }
 }
