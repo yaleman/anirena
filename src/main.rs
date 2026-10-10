@@ -4,7 +4,6 @@ use std::{
 };
 
 use clap::Parser;
-use qbit_rs::model::{AddTorrentArg, TorrentSource};
 use reqwest::Url;
 
 #[tokio::main]
@@ -54,31 +53,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         println!("Adding {} torrents to qBittorrent...", to_add.len());
-        let qbt = anirena::qbt::QbtClient::from(&opts).login().await?;
-        let mut args = AddTorrentArg::default();
-        if let Some(category) = opts.qbt_category {
-            args.category = Some(category);
-        }
-        args.stopped = Some((!opts.qbt_auto_start).to_string());
-
         let magnet_urls = results
             .iter()
             .enumerate()
             .filter_map(|(index, torrent)| {
                 if to_add.contains(&index) {
-                    Some(
-                        Url::from_str(&torrent.magnet.clone())
-                            .expect("FFailed to parse magnet URL"),
-                    )
+                    Some(Url::from_str(&torrent.magnet))
                 } else {
                     None
                 }
             })
-            .collect::<Vec<_>>();
-        args.source = TorrentSource::Urls {
-            urls: magnet_urls.into(),
-        };
-        qbt.add_torrent(args).await?;
+            .collect::<Result<Vec<_>, _>>()?;
+        anirena::qbt::QbtClient::from(&opts)
+            .add_torrents(magnet_urls)
+            .await?;
     }
     Ok(())
 }
